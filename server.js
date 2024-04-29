@@ -1,148 +1,100 @@
 import express from "express";
-import { createServer } from "http";
-import { Server } from "socket.io";
+import http from "http";
+import { Server as SocketIOServer } from "socket.io";
 import cors from "cors";
-import fs from "fs";
-
-const PORT = 3000;
 
 const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
+const server = http.createServer(app);
+const io = new SocketIOServer(server, {
   cors: {
     origin: "http://localhost:5173",
     methods: ["GET", "POST"],
   },
 });
 
-// Middleware
-app.use(express.json());
 app.use(cors());
 
-const dirPath = "./data";
-if (!fs.existsSync(dirPath)) {
-  fs.mkdirSync(dirPath);
-}
+// Simpan nomor antrian dan status loket
+let queueNumbers = {
+  queue: 0,
+  lokets: [
+    { number: 0, status: "Menunggu" },
+    { number: 0, status: "Menunggu" },
+    { number: 0, status: "Menunggu" },
+  ],
+};
 
-const queuesFilePath = "./data/queues.json";
-if (!fs.existsSync(queuesFilePath)) {
-  fs.writeFileSync(queuesFilePath, "[]", "utf-8");
-}
-
-// Fungsi untuk menyimpan data antrian ke dalam file
-const saveQueuesToFile = () => {
-  try {
-    fs.writeFileSync(queuesFilePath, JSON.stringify(queues));
-    console.log("Queues data saved to file.");
-  } catch (err) {
-    console.error("Error saving queues data to file:", err);
+// Fungsi untuk mengambil nomor antrian baru dan menetapkan ke loket yang tersedia
+const registerQueue = () => {
+  const emptyLoketIndex = queueNumbers.lokets.findIndex(
+    (loket) => loket.status === "Menunggu"
+  );
+  if (emptyLoketIndex !== -1) {
+    // Jika ada loket kosong, tambahkan antrian baru ke loket tersebut
+    queueNumbers.queue++;
+    queueNumbers.lokets[emptyLoketIndex] = {
+      number: queueNumbers.queue,
+      status: "Serve",
+      timestamp: Date.now(), // Set timestamp saat loket mulai melayani
+    };
+    updateQueue(); // Memperbarui antrian setelah menambahkan nomor baru
+  } else {
+    console.log("Semua loket sedang penuh");
   }
 };
 
-// Fungsi untuk memuat data antrian dari file saat server dimulai
-const loadQueuesFromFile = () => {
-  try {
-    const data = fs.readFileSync(queuesFilePath, "utf8");
-    return JSON.parse(data);
-  } catch (err) {
-    console.error("Error loading queues data from file:", err);
-    return [];
-  }
+// Fungsi untuk menyelesaikan pelayanan pada loket
+const finishService = (loketIndex) => {
+  queueNumbers.lokets[loketIndex].status = "Success";
+  console.log(`Loket ${loketIndex + 1} selesai dilayani`);
+  // Reset nomor antrian pada loket yang selesai dilayani
+  queueNumbers.lokets[loketIndex].number = 0;
 };
 
-// Inisialisasi antrian dari file saat server dimulai
-let queues = loadQueuesFromFile();
-const loketCount = 3;
+// Fungsi untuk memperbarui status loket jika waktu melewati 5 detik
+const updateLoketsStatus = () => {
+  queueNumbers.lokets.forEach((loket, index) => {
+    if (loket.status === "Serve") {
+      const timeDiff = Date.now() - loket.timestamp;
+      if (timeDiff >= 5000) {
+        finishService(index);
+        if (queueNumbers.queue > queueNumbers.lokets.length) {
+          registerQueue(); // Panggil fungsi registerQueue jika masih ada antrian yang tersedia
+        }
+      }
+    }
+  });
+};
 
-// Config koneksi dari client
+// Fungsi untuk mengupdate klien dengan data antrian yang baru
+const updateQueue = () => {
+  io.emit("queueUpdated", queueNumbers); // Mengirimkan pembaruan antrian ke klien
+};
+
+// Meng-handle koneksi dari klien
 io.on("connection", (socket) => {
-  console.log("a user connected");
+  console.log("Client connected");
 
+  // Mengirim data antrian ke klien saat koneksi berhasil
+  socket.emit("queueUpdated", queueNumbers);
+
+  // Meng-handle event 'registerQueue' dari klien
+  socket.on("registerQueue", () => {
+    registerQueue(); // Panggil fungsi registerQueue saat menerima event dari klien
+  });
+
+  // Meng-handle event ketika klien terputus
   socket.on("disconnect", () => {
-    console.log("user disconnected");
+    console.log("Client disconnected");
   });
 });
 
-app.post("/call-next", (req, res) => {
-  const nextQueueNumber = generateNextQueueNumber();
-  if (nextQueueNumber) {
-    io.emit("queue_update", { queueNumber: nextQueueNumber });
-    res.json({ success: true });
-  } else {
-    res.status(404).json({ success: false, message: "No available queue." });
-  }
-});
+// Memulai interval untuk memeriksa dan memperbarui status loket setiap detik
+setInterval(() => {
+  updateLoketsStatus(); // Memeriksa status loket setiap detik
+}, 1000);
 
-app.post("/approve-queue", (req, res) => {
-  const { queueNumber } = req.body;
-  const servingQueue = queues.find(
-    (queue) => queue.queueNumber === queueNumber
-  );
-
-  if (!servingQueue || servingQueue.status !== "serving") {
-    res.status(404).json({
-      success: false,
-      message: "Invalid or not serving queue number.",
-    });
-    return;
-  }
-
-  // Ubah status antrian yang sedang dilayani menjadi "success"
-  servingQueue.status = "success";
-
-  // Kosongkan loket yang terkait dengan nomor antrian yang sedang dilayani
-  servingQueue.counter = null;
-
-  // Kirim pembaruan status antrian ke semua klien
-  io.emit("queue_update", { queueNumber, newStatus: "success" });
-
-  // Simpan perubahan data antrian ke dalam file
-  saveQueuesToFile();
-
-  res.json({ success: true });
-});
-
-// Route GET
-app.get("/queue", (req, res) => {
-  res.json(queues);
-});
-
-// Route POST untuk update antrian
-app.post("/update-queue", (req, res) => {
-  const updatedQueueData = req.body.updatedQueueData;
-  if (!updatedQueueData || Object.keys(updatedQueueData).length === 0) {
-    res.status(400).json({
-      success: false,
-      message: "Data antrian kosong atau tidak valid",
-    });
-  } else {
-    queues = updatedQueueData;
-    io.emit("queue_update", queues);
-    saveQueuesToFile();
-    res.json({ success: true });
-  }
-});
-
-// Fungsi untuk menentukan loket berikutnya
-const nextCounter = (currentCounter) => {
-  let nextCounter = currentCounter + 1;
-  if (nextCounter > loketCount) {
-    nextCounter = 1;
-  }
-  return nextCounter;
-};
-
-// Fungsi untuk menghasilkan antrian berikutnya
-const generateNextQueueNumber = () => {
-  const nextQueue = queues.find((queue) => queue.status === "waiting");
-  if (!nextQueue) {
-    return null;
-  }
-  nextQueue.status = "being_served";
-  saveQueuesToFile();
-  return nextQueue.queueNumber;
-};
-
-httpServer.listen(PORT, () => {
-  console.log(`listening on PORT ${PORT}`);
+const PORT = 3000;
+server.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
