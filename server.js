@@ -58,13 +58,11 @@ const loketCount = 3;
 io.on("connection", (socket) => {
   console.log("a user connected");
 
-  // Event ketika client memutuskan koneksi
   socket.on("disconnect", () => {
     console.log("user disconnected");
   });
 });
 
-// Event ketika ada permintaan untuk memanggil nomor antrian berikutnya
 app.post("/call-next", (req, res) => {
   const nextQueueNumber = generateNextQueueNumber();
   if (nextQueueNumber) {
@@ -75,7 +73,6 @@ app.post("/call-next", (req, res) => {
   }
 });
 
-// Event ketika ada permintaan untuk menyetujui nomor antrian yang sedang dilayani
 app.post("/approve-queue", (req, res) => {
   const { queueNumber } = req.body;
   const servingQueue = queues.find(
