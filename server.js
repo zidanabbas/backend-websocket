@@ -118,6 +118,7 @@ app.post("/update-queue", (req, res) => {
   } else {
     queues = updatedQueueData;
     io.emit("queue_update", queues);
+    saveQueuesToFile();
     res.json({ success: true });
   }
 });
